@@ -1,0 +1,4 @@
+{
+    "editor.formatOnPaste": true,
+    "C_Cpp.clang_format_fallbackStyle": "{ BasedOnStyle: Google, IndentWidth: 2, TabWidth: 2, BreakBeforeBraces: Attach, AllowShortIfStatementsOnASingleLine: true, EmptyLineBeforeAccessModifier: Never, IncludeBlocks: Regroup, IndentCaseBlocks: false, IndentCaseLabels: true, IndentPPDirectives: BeforeHash, AccessModifierOffset: -2}"
+}
