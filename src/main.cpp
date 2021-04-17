@@ -24,7 +24,7 @@
 
 #define DEBUG true
 #define PRINT_DATA false
-#define ConfigVersion 1
+#define ConfigVersion 124
 
 #define uSToSFactor 1000000UL
 #define SecondsPerMinute 60UL
@@ -72,6 +72,10 @@ typedef struct {
       float Value;
       int8_t Index;
     } Huf;
+    struct {
+      float Value;
+      int8_t Index;
+    } Btc;    
   } Currencies;
   struct {
     const char* NameDays;
@@ -124,6 +128,7 @@ struct {
       const char* BirthDays;
       const char* ApiKey;
     } GCalendar;
+    const char* BTC;
   } Server;
   struct {
     uint8_t Pins[4];
@@ -141,9 +146,10 @@ struct {
 // ----------------------------------------
 
 enum FontStyle {REGULAR, BOLD};
-enum FontColor {WHITE, BLACK, YELLOW};
+enum FontColor {WHITE, BLACK};
 enum TextAlignment {LEFT, RIGHT, CENTER} ;
 enum TextLetterCase {NORMAL, LOWERCASE, UPPERCASE};
+enum CurrencyType {BNR, BTC};
 enum CurrencyRateIndex {NONE_INDEX, UP_INDEX, DOWN_INDEX};
 enum GCalendarType {NAMEDAYS, BIRTHDAYS};
 enum GCalendarFeature {TODAY, UPCOMING};
@@ -202,7 +208,8 @@ class App {
           {"HomeEinkBadge", "Szeklerman", "tokosmagor2012", {192, 168, 0, 51}, {255, 255, 255, 0}, {192, 168, 0, 1}, {192, 168, 0, 1}, {0, 0, 0, 0}}, 
           {"pool.ntp.org", 3, 0, "EET-2EEST,M3.5.0/3,M10.5.0/4"}, 
           {"https://www.bnr.ro/nbrfxrates.xml", {"https://www.googleapis.com/calendar/v3/calendars/", "nd0bsakc20brgj1k84g34n145s@group.calendar.google.com", 
-          "ka9f0r2ntq81omtftucrp5cucs@group.calendar.google.com", "AIzaSyDeSk9u__88kLbiAm-U873VGrNFzb0ax3A"}},
+          "ka9f0r2ntq81omtftucrp5cucs@group.calendar.google.com", "AIzaSyDeSk9u__88kLbiAm-U873VGrNFzb0ax3A"},
+          "https://bitpay.com/rates/RON"},
           {{5, 17, 16, 4}, Display.height(), Display.width()}, 
           {24, 7, 0, 2}
         };
@@ -497,59 +504,95 @@ class App {
       esp_deep_sleep_start();
     };
 
-    bool GetCurrencies(String url) {
+    bool GetCurrencies(CurrencyType type) {
       HTTPClient http;
-      XMLDocument xml;
-      float prevEurValue = RTC.Currencies.Eur.Value;
-      float prevUsdValue = RTC.Currencies.Usd.Value;
-      float prevHufValue = RTC.Currencies.Huf.Value;
-      if (BootCount == 0) {
-        RTC.Currencies.Eur.Index = NONE_INDEX;
-        RTC.Currencies.Usd.Index = NONE_INDEX;
-        RTC.Currencies.Huf.Index = NONE_INDEX;
-      };
-      dPrintln(SeparationLine);
-      dPrint("Connecting to BNR Server");
-      http.begin(url);
-      uint16_t httpCode = http.GET();
-      if (httpCode == HTTP_CODE_OK) {
-        dPrintln(" succes!");
-        dPrintf("HTTP Status Code: %d\n", httpCode);
-        String httpString = http.getString();
-        dPrintf("Data size: %d byte\n", httpString.length());
-        if (xml.Parse(httpString.c_str(), 15000U) != XML_SUCCESS) {
-          dPrintln("XML parsing failed!");
-          return false; 
+      if (type == BNR) {
+        XMLDocument xml;
+        float prevEurValue = RTC.Currencies.Eur.Value;
+        float prevUsdValue = RTC.Currencies.Usd.Value;
+        float prevHufValue = RTC.Currencies.Huf.Value;
+        if (BootCount == 0) {
+          RTC.Currencies.Eur.Index = NONE_INDEX;
+          RTC.Currencies.Usd.Index = NONE_INDEX;
+          RTC.Currencies.Huf.Index = NONE_INDEX;
         };
-        uint8_t status = 0;
-        XMLElement* currencies = xml.FirstChildElement()->LastChildElement("Body")->LastChildElement("Cube")->FirstChildElement("Rate");
-        for (; currencies != NULL; currencies = currencies->NextSiblingElement()) {
-          if (currencies->Attribute("currency", "EUR")) {
-            currencies->QueryFloatText(&RTC.Currencies.Eur.Value);
-            RTC.Currencies.Eur.Index = (RTC.Currencies.Eur.Value > prevEurValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
-            status += 1;
+        dPrintln(SeparationLine);
+        dPrint("Connecting to BNR Server");
+        http.begin(String(CFG.Server.BNR));
+        uint16_t httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) {
+          dPrintln(" succes!");
+          dPrintf("HTTP Status Code: %d\n", httpCode);
+          String httpString = http.getString();
+          dPrintf("Data size: %d byte\n", httpString.length());
+          if (xml.Parse(httpString.c_str(), 15000U) != XML_SUCCESS) {
+            dPrintln("XML parsing failed!");
+            return false; 
           };
-          if (currencies->Attribute("currency", "USD")) {
-            currencies->QueryFloatText(&RTC.Currencies.Usd.Value);
-            RTC.Currencies.Usd.Index = (RTC.Currencies.Usd.Value > prevUsdValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
-            status += 1;
+          uint8_t status = 0;
+          XMLElement* currencies = xml.FirstChildElement()->LastChildElement("Body")->LastChildElement("Cube")->FirstChildElement("Rate");
+          for (; currencies != NULL; currencies = currencies->NextSiblingElement()) {
+            if (currencies->Attribute("currency", "EUR")) {
+              currencies->QueryFloatText(&RTC.Currencies.Eur.Value);
+              RTC.Currencies.Eur.Index = (RTC.Currencies.Eur.Value > prevEurValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+              status += 1;
+            };
+            if (currencies->Attribute("currency", "USD")) {
+              currencies->QueryFloatText(&RTC.Currencies.Usd.Value);
+              RTC.Currencies.Usd.Index = (RTC.Currencies.Usd.Value > prevUsdValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+              status += 1;
+            };
+            if (currencies->Attribute("currency", "HUF")) {
+              currencies->QueryFloatText(&RTC.Currencies.Huf.Value);
+              RTC.Currencies.Huf.Index = (RTC.Currencies.Huf.Value > prevHufValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+              status += 1;
+            };
           };
-          if (currencies->Attribute("currency", "HUF")) {
-            currencies->QueryFloatText(&RTC.Currencies.Huf.Value);
-            RTC.Currencies.Huf.Index = (RTC.Currencies.Huf.Value > prevHufValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
-            status += 1;
-          };
+          dPrintf("XML parsed %s!\n", (status == 3 ? "successful" : "failed"));
+          dPrintf("EURO %.2f | USD %.2f | HUF %.2f\n", RTC.Currencies.Eur.Value, RTC.Currencies.Usd.Value, RTC.Currencies.Huf.Value);
+          if (status < 3) return false;
+          http.end();
+          return true;
         };
-        dPrintf("XML parsed %s!\n", (status == 3 ? "successful" : "failed"));
-        dPrintf("Currencies: EURO %.2f | USD %.2f | HUF %.2f\n", RTC.Currencies.Eur.Value, RTC.Currencies.Usd.Value, RTC.Currencies.Huf.Value);
-        if (status < 3) return false;
         http.end();
-        return true;
+        dPrintln(" failed!");
+        dPrintf("HTTP Status Code: %d\n", httpCode);
+        dPrintln("Error on HTTP request!");
+        return false;
+      } else if (type == BTC) {
+        float prevBtcValue = RTC.Currencies.Btc.Value;
+        dPrintln(SeparationLine);
+        dPrint("Connecting to Pitpay Server");
+        http.begin(String(CFG.Server.BTC));
+        uint16_t httpCode = http.GET();
+        if (httpCode == HTTP_CODE_OK) {
+          dPrintln(" succes!");
+          dPrintf("HTTP Status Code: %d\n", httpCode);
+          DeserializationError error = deserializeJson(Data, http.getString());
+          dPrintf("Data size: %d byte\n", Data.memoryUsage());
+          if (error) {
+            dPrintln("Json deserialize failed!");
+            return false;
+          };
+          #if PRINT_DATA
+            dPrintln("Requested data: ");
+            serializeJsonPretty(Data, Serial);
+            dPrintln();
+          #endif
+          http.end();
+          if (Data.size() == 0) return false;
+          RTC.Currencies.Btc.Value = Data["data"]["rate"];
+          RTC.Currencies.Btc.Index = (RTC.Currencies.Btc.Value > prevBtcValue ? DOWN_INDEX : (RTC.Currencies.Btc.Value == prevBtcValue ? NONE_INDEX : UP_INDEX));
+          dPrintln("Json serialized successful!");
+          dPrintf("BTC: %.2f\n", RTC.Currencies.Btc.Value);
+          return true;
+        };
+        http.end();
+        dPrintln(" failed!");
+        dPrintf("HTTP Status Code: %d\n", httpCode);
+        dPrintln("Error on HTTP request!");
+        return false;
       };
-      dPrintln(" failed!");
-      dPrintf("HTTP Status Code: %d\n", httpCode);
-      dPrintln("Error on HTTP request!");
-      http.end();
       return false;
     };
 
@@ -629,14 +672,15 @@ class App {
       uint8_t runCalc = 0;
       uint8_t retry = 0;
       for (;;) {
-        if (GetCurrencies(String(CFG.Server.BNR))) runCalc += 1;
+        if (GetCurrencies(BNR)) runCalc += 1;
+        if (GetCurrencies(BTC)) runCalc += 1;
         if (GetGCalendarData(NAMEDAYS)) runCalc += 1;
         if (GetGCalendarData(BIRTHDAYS)) runCalc += 1;
-        if (runCalc == 3) {
+        if (runCalc == 4) {
           result = true;
           break;
         };
-        if (runCalc < 3) {
+        if (runCalc < 4) {
           runCalc = 0;
           delay(1000);
         };
@@ -701,7 +745,6 @@ class App {
       };
       switch (color) {
         case WHITE: Display.setTextColor(GxEPD_WHITE); break;
-        case YELLOW: Display.setTextColor(GxEPD_YELLOW); break;
         case BLACK: default: Display.setTextColor(GxEPD_BLACK); break;      
       };
       Display.setTextWrap(false);
