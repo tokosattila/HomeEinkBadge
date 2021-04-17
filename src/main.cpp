@@ -3,11 +3,13 @@
 #include "WiFi.h"
 #include "HTTPClient.h"
 #include "Wire.h"
-#include "mySD.h"
+#define ENABLE_GxEPD2_GFX 0
+#include <GxEPD2_BW.h>
+#include <GxEPD2_3C.h>
+#include <GxEPD2_7C.h>
+#include "tinyxml2.h"
 #define ARDUINOJSON_DECODE_UNICODE 1
 #include "ArduinoJson.h"
-#include "GxEPD2_32_BW.h"
-#include "GxEPD2_32_3C.h"
 #include "time.h"
 #include "esp32-hal.h"
 #include "driver/adc.h"
@@ -20,21 +22,24 @@
 
 // ----------------------------------------
 
-#define DEBUG false
-#define LOGGER true
-#define ConfigVersion 125
+#define DEBUG true
+#define PRINT_DATA false
+#define ConfigVersion 1
 
 #define uSToSFactor 1000000UL
-#define SecondsPerMinute 60U
+#define SecondsPerMinute 60UL
 #define SecondsPerHour 3600UL
-#define SecondsPerDay (24L * SecondsPerHour)
+#define SecondsPerDay 86400UL
 #define NumberOfSeconds(_time_) (_time_ % SecondsPerMinute)  
 #define NumberOfMinutes(_time_) ((_time_ / SecondsPerMinute) % SecondsPerMinute)
 #define NumberOfHours(_time_) ((_time_ % SecondsPerDay) / SecondsPerHour)
 #define NumberOfDays(_time_) (_time_ / SecondsPerDay)
 
-#define GxEPD_YELLOW GxEPD_RED
 #define SeparationLine "----------------------------------------"
+
+// ----------------------------------------
+
+using namespace tinyxml2;
 
 // ----------------------------------------
 
@@ -43,9 +48,8 @@ int _EXFUN(setenv, (const char *__string, const char *__value, int __overwrite))
 
 // ----------------------------------------
 
-DynamicJsonDocument Data(2560);
-GxEPD2_32_3C Display(GxEPD2::GDEW075Z09, 5, 17, 16, 4);
-File Logger;
+DynamicJsonDocument Data(6144);
+GxEPD2_BW<GxEPD2_213_B73, GxEPD2_213_B73::HEIGHT> Display(GxEPD2_213_B73(5, 17, 16, 4));
 
 // ----------------------------------------
 
@@ -55,20 +59,38 @@ typedef struct {
   unsigned long ScheduledDateTime;
   unsigned long ScheduledDelay;
   unsigned long LastSleepTime;
-  unsigned long LastRefreshTime;
+  struct {
+    struct {
+      float Value;
+      int8_t Index;
+    } Eur;
+    struct {
+      float Value;
+      int8_t Index;
+    } Usd;
+    struct {
+      float Value;
+      int8_t Index;
+    } Huf;
+  } Currencies;
+  struct {
+    const char* NameDays;
+    struct {
+      const char* Name;
+      const char* Date;
+    } BirthDays;
+  } GCalendar;
 } RTCMemory;
 
 RTC_DATA_ATTR RTCMemory RTC;
 RTC_DATA_ATTR byte BootCount = -1;
-String LoggerPath;
-bool LoggerStatus = false;
 
 // ----------------------------------------
 
 struct {
   uint8_t Version;
   uint8_t CpuFrequency;
-  int BaudRate;
+  int BaudIndex;
   struct {
     bool StaticIP;
     bool Accents;
@@ -95,8 +117,13 @@ struct {
     const char* TimeZone;
   } NTP;
   struct {
-    const char* Url;
-    const char* ApiKey;
+    const char* BNR;
+    struct {
+      const char* Url;
+      const char* NameDays;
+      const char* BirthDays;
+      const char* ApiKey;
+    } GCalendar;
   } Server;
   struct {
     uint8_t Pins[4];
@@ -109,10 +136,6 @@ struct {
     uint8_t OffsetMinutes;
     uint8_t ExecutionTimeLimit;
   } Scheduler;
-  struct {
-    uint8_t Pins[4];
-    const char* Folder;
-  } Logger;
 } CFG;
 
 // ----------------------------------------
@@ -121,6 +144,9 @@ enum FontStyle {REGULAR, BOLD};
 enum FontColor {WHITE, BLACK, YELLOW};
 enum TextAlignment {LEFT, RIGHT, CENTER} ;
 enum TextLetterCase {NORMAL, LOWERCASE, UPPERCASE};
+enum CurrencyRateIndex {NONE_INDEX, UP_INDEX, DOWN_INDEX};
+enum GCalendarType {NAMEDAYS, BIRTHDAYS};
+enum GCalendarFeature {TODAY, UPCOMING};
 
 // ----------------------------------------
 
@@ -134,15 +160,9 @@ enum TextLetterCase {NORMAL, LOWERCASE, UPPERCASE};
 #else
   #define dBegin(...)
   #define dSetDebugOutput(...)
-  #if LOGGER
-    #define dPrint(...) { if (BootCount > 0 && LoggerStatus) { File Logger = SD.open(LoggerPath.c_str(), FILE_WRITE); Logger.print(__VA_ARGS__); Logger.close(); } }
-    #define dPrintln(...) { if (BootCount > 0 && LoggerStatus) { File Logger = SD.open(LoggerPath.c_str(), FILE_WRITE); Logger.println(__VA_ARGS__); Logger.close(); } }
-    #define dPrintf(...) { if (BootCount > 0 && LoggerStatus) { File Logger = SD.open(LoggerPath.c_str(), FILE_WRITE); Logger.printf(__VA_ARGS__); Logger.close(); } }
-  #else
-    #define dPrint(...)
-    #define dPrintln(...)
-    #define dPrintf(...)
-  #endif
+  #define dPrint(...)
+  #define dPrintln(...)
+  #define dPrintf(...)
   #define dFlush()
 #endif
 
@@ -151,7 +171,7 @@ enum TextLetterCase {NORMAL, LOWERCASE, UPPERCASE};
 class App {
 
   private: 
-    size_t mEEPROMSize = 256;
+    size_t mEEPROMSize = 512;
     uint16_t mEEPROMAddress = 0;
     uint8_t mBatteryPercentage = 100;
     float mVoltage;
@@ -179,38 +199,16 @@ class App {
           ConfigVersion, 240, 115200, 
           {true, false}, 
           {LED_BUILTIN, GPIO_NUM_39, GPIO_NUM_35}, 
-          {"HomeEinkDisplay", "Szeklerman", "tokosmagor2012", {192, 168, 0, 50}, {255, 255, 255, 0}, {192, 168, 0, 1}, {192, 168, 0, 1}, {0, 0, 0, 0}}, 
+          {"HomeEinkBadge", "Szeklerman", "tokosmagor2012", {192, 168, 0, 51}, {255, 255, 255, 0}, {192, 168, 0, 1}, {192, 168, 0, 1}, {0, 0, 0, 0}}, 
           {"pool.ntp.org", 3, 0, "EET-2EEST,M3.5.0/3,M10.5.0/4"}, 
-          {"http://www.szeklerman.com/~apps/expenses-display/api", "vjTK2KMhYz"}, 
-          {{5, 17, 16, 4}, Display.width(), Display.height()}, 
-          {24, 7, 0, 2},
-          {{13, 15, 2, 14}, "HED"}
+          {"https://www.bnr.ro/nbrfxrates.xml", {"https://www.googleapis.com/calendar/v3/calendars/", "nd0bsakc20brgj1k84g34n145s@group.calendar.google.com", 
+          "ka9f0r2ntq81omtftucrp5cucs@group.calendar.google.com", "AIzaSyDeSk9u__88kLbiAm-U873VGrNFzb0ax3A"}},
+          {{5, 17, 16, 4}, Display.height(), Display.width()}, 
+          {24, 7, 0, 2}
         };
         WriteEEPROM(CFG);
         ReadEEPROM(CFG);
       };
-    };
-
-    void InitLogger() {
-      if (BootCount <= 0) return;
-      if (!SD.begin(CFG.Logger.Pins[0], CFG.Logger.Pins[1], CFG.Logger.Pins[2], CFG.Logger.Pins[3])) {
-        LoggerStatus = false;
-        return;
-      };
-      if (SD.cardType() == 0) {
-        LoggerStatus = false;
-        return;
-      };
-      LoggerStatus = true;
-      String loggerTemp = String(String(CFG.Logger.Folder) + "/" + String(RTC.TimeInfo.tm_year + 1900) + "/" + ((int)(RTC.TimeInfo.tm_mon + 1) <= 9 ? "0" : "") + String(RTC.TimeInfo.tm_mon + 1));
-      char loggerDirectory[13];
-      strcpy(loggerDirectory, loggerTemp.c_str());
-      SD.mkdir(loggerDirectory);
-      LoggerPath = String(loggerTemp + "/" + ((int)RTC.TimeInfo.tm_mday <= 9 ? "0" : "") + String(RTC.TimeInfo.tm_mday) + ".log");
-      Logger = SD.open(LoggerPath.c_str(), FILE_WRITE);
-      Logger.println(SeparationLine);
-      Logger.close();
-      Logger = SD.open(LoggerPath.c_str());
     };
 
     bool MeasureBattery() {
@@ -222,16 +220,7 @@ class App {
       return true;
     };
 
-    String SDCardType(uint8_t cardType) {
-      switch (cardType) {
-        case SD_CARD_TYPE_SD1: return "SD1";
-        case SD_CARD_TYPE_SD2: return "SD2";
-        case SD_CARD_TYPE_SDHC: return "SDHC";
-        default: return "N/A";
-      };
-    };
-
-    void DeviceInfo() {
+    void DeviceInfo(bool state = true) {
       dPrintln(SeparationLine);
       if (BootCount == 0) {
         dPrintf("First boot (%d)\n", BootCount);
@@ -239,22 +228,14 @@ class App {
         dPrintf("Boot nr. %d\n", BootCount);
       };
       dPrintln(SeparationLine);
-      dPrintf("Device name: %s\n", WiFi.getHostname());
+      dPrintf("Device name: %s\n", (state ? WiFi.getHostname() : CFG.Auth.Hostname));
       dPrintf("CPU frequency: %dMHz\n", getCpuFrequencyMhz());
       dPrint("Battery power: ");
       dPrint(String(mBatteryPercentage));
       dPrint("% (");
       dPrint(String(mVoltage));
       dPrintln("V)");
-      if (mBatteryPercentage <= 0) dPrintln("Low battery");
-      #if LOGGER
-        if (LoggerStatus) {
-          dPrintln(SeparationLine);
-          dPrintln("SD Card attached the device");
-          dPrintf("SD Card Type: %s\n", SDCardType(SD.cardType()).c_str());
-          dPrintf("SD Card Size: %3.2fGB\n", (float)SD.cardSize() / (1024 * 1024));
-        };
-      #endif
+      if (mBatteryPercentage <= 0) dPrintln("Low battery!");
     };
 
     String WifiType(wifi_auth_mode_t encryptionType) {
@@ -290,7 +271,7 @@ class App {
       if (WiFi.status() != WL_CONNECTED) {
         WiFi.begin(CFG.Auth.SSID, CFG.Auth.Password);
         delay(250);
-        DeviceInfo();
+        DeviceInfo(true);
         delay(3000);
         int16_t numberOfNetworks = WiFi.scanNetworks();
         dPrintln(SeparationLine);
@@ -347,23 +328,22 @@ class App {
     };
 
     void ConnectToNTPServer() {
+      setenv("TZ", CFG.NTP.TimeZone, 1);
+      tzset();
       dPrintln(SeparationLine);
-      dPrintf("Connecting to %s", CFG.NTP.Server);    
+      dPrintf("Connecting to %s", CFG.NTP.Server);
       while (!getLocalTime(&RTC.TimeInfo)) {
         configTime((CFG.NTP.GMTOffset * SecondsPerHour), (CFG.NTP.DayLightOffset * SecondsPerHour), CFG.NTP.Server);
         delay(500);
       };
       dPrintln(" success!");
-      dPrint("Current time: ");
       GetTime();
-      dPrintln(&RTC.TimeInfo, "%Y.%m.%d. %H:%M:%S");
+      PrintEpochTime("Current time: ", RTC.NowTime);
     };
 
     void GetTime() {
       if (getLocalTime(&RTC.TimeInfo)) {
         time(&RTC.NowTime);
-        setenv("TZ", CFG.NTP.TimeZone, 1);
-        tzset();
         localtime(&RTC.NowTime);
       };
     };
@@ -404,7 +384,9 @@ class App {
         PrintWithLeadingZero(NumberOfMinutes(time), ":");
         PrintWithLeadingZero(NumberOfSeconds(time), " hour(s)");
       } else if (time == SecondsPerDay) {
-        PrintWithLeadingZero(NumberOfDays(time), " day");  
+        PrintWithLeadingZero(NumberOfDays(time), " day");
+      } else if (time == (365 * SecondsPerDay)) {
+        PrintWithLeadingZero(NumberOfDays(time), " day(s)");
       } else if (time > SecondsPerDay) {
         PrintWithLeadingZero(NumberOfDays(time), " day(s) ");
         PrintWithLeadingZero(NumberOfHours(time), ":");
@@ -414,23 +396,34 @@ class App {
       dPrintln(endSign);
     };
 
+    void PrintWithLeadingZero(uint16_t digits, String endSign = "") {
+      if (digits <= 9 || (digits <= 9 && endSign != " day")) dPrint("0");
+      dPrint(digits, DEC);
+      dPrint(endSign);
+    };
+
     void PrintEpochDateTime(unsigned long epochtime) {
+      dPrintln(ConvertEpochToDateTime(epochtime));
+    };
+
+    String ConvertEpochToDateTime(unsigned long epochtime, const char* format = "%d.%02d.%02d %02d:%02d:%02d") {
+      char dateTime[100];
       uint8_t daysOfMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-      long currYear, daysTillNow, extraTime, extraDays, index, date, month, hours, minutes, seconds, flag = 0;
+      long year, daysTillNow, extraTime, extraDays, index, day, month, hours, minutes, seconds, flag = 0;
       epochtime = epochtime + (CFG.NTP.GMTOffset * SecondsPerHour);
-      daysTillNow = epochtime / (24 * SecondsPerHour);
-      extraTime = epochtime % (24 * SecondsPerHour);
-      currYear = 1970;
+      daysTillNow = epochtime / SecondsPerDay;
+      extraTime = epochtime % SecondsPerDay;
+      year = 1970;
       while (daysTillNow >= 365) {
-        if (currYear % 400 == 0 || (currYear % 4 == 0 && currYear % 100 != 0)) {
+        if (year % 400 == 0 || (year % 4 == 0 && year % 100 != 0)) {
           daysTillNow -= 366;
         } else {
           daysTillNow -= 365;
         };
-        currYear += 1;
+        year += 1;
       };
       extraDays = daysTillNow + 1;
-      if (currYear % 400 == 0 || (currYear % 4 == 0 && currYear % 100 != 0)) flag = 1;
+      if (year % 400 == 0 || (year % 4 == 0 && year % 100 != 0)) flag = 1;
       month = 0, index = 0;
       if (flag == 1) {
         while (true) {
@@ -455,32 +448,20 @@ class App {
       };
       if (extraDays > 0) {
         month += 1;
-        date = extraDays;
+        day = extraDays;
       } else {
         if (month == 2 && flag == 1) {
-          date = 29;
+          day = 29;
         } else {
-          date = daysOfMonth[month - 1];
+          day = daysOfMonth[month - 1];
         };
       };
       hours = extraTime / SecondsPerHour;
       minutes = (extraTime % SecondsPerHour) / SecondsPerMinute;
       seconds = (extraTime % SecondsPerHour) % SecondsPerMinute;
-      dPrint(currYear);
-      dPrint(".");
-      PrintWithLeadingZero(month, ".");
-      PrintWithLeadingZero(date, ". ");
-      PrintWithLeadingZero(hours, ":");
-      PrintWithLeadingZero(minutes, ":");
-      PrintWithLeadingZero(seconds);
-      dPrintln();
-    };
-
-    void PrintWithLeadingZero(byte digits, String endSign = "") {
-      if (digits <= 9 || (digits <= 9 && endSign != " day")) dPrint("0");
-      dPrint(digits, DEC);
-      dPrint(endSign);
-    }; 
+      snprintf(dateTime, sizeof(dateTime), format, year, month, day, hours, minutes, seconds);
+      return String(dateTime);
+    };  
 
     bool WakeupReason(esp_sleep_source_t exWakeupReason) {
       esp_sleep_wakeup_cause_t wakeupReason = esp_sleep_get_wakeup_cause();
@@ -502,8 +483,12 @@ class App {
       unsigned long deepSleepEnd = scheduledDelay != RTC.ScheduledDelay ? RTC.NowTime + scheduledDelay : RTC.ScheduledDateTime;
       dPrintln(SeparationLine);
       dPrintln("Going to deep sleep...");
-      PrintEpochTime("Start: ", RTC.NowTime);
-      PrintEpochTime("End: ", deepSleepEnd);
+      if (RTC.NowTime != 0) {
+        PrintEpochTime("Start: ", RTC.NowTime);
+        PrintEpochTime("End: ", deepSleepEnd);
+      } else {
+        PrintEpochTime("Deep sleep length: ", scheduledDelay);
+      };
       dPrintln(SeparationLine);
       PrintEpochTime("Execution time: ", seconds());
       dFlush();
@@ -511,6 +496,154 @@ class App {
       esp_sleep_enable_ext0_wakeup(CFG.GPIO.Wakeup, 0);
       esp_deep_sleep_start();
     };
+
+    bool GetCurrencies(String url) {
+      HTTPClient http;
+      XMLDocument xml;
+      float prevEurValue = RTC.Currencies.Eur.Value;
+      float prevUsdValue = RTC.Currencies.Usd.Value;
+      float prevHufValue = RTC.Currencies.Huf.Value;
+      if (BootCount == 0) {
+        RTC.Currencies.Eur.Index = NONE_INDEX;
+        RTC.Currencies.Usd.Index = NONE_INDEX;
+        RTC.Currencies.Huf.Index = NONE_INDEX;
+      };
+      dPrintln(SeparationLine);
+      dPrint("Connecting to BNR Server");
+      http.begin(url);
+      uint16_t httpCode = http.GET();
+      if (httpCode == HTTP_CODE_OK) {
+        dPrintln(" succes!");
+        dPrintf("HTTP Status Code: %d\n", httpCode);
+        String httpString = http.getString();
+        dPrintf("Data size: %d byte\n", httpString.length());
+        if (xml.Parse(httpString.c_str(), 15000U) != XML_SUCCESS) {
+          dPrintln("XML parsing failed!");
+          return false; 
+        };
+        uint8_t status = 0;
+        XMLElement* currencies = xml.FirstChildElement()->LastChildElement("Body")->LastChildElement("Cube")->FirstChildElement("Rate");
+        for (; currencies != NULL; currencies = currencies->NextSiblingElement()) {
+          if (currencies->Attribute("currency", "EUR")) {
+            currencies->QueryFloatText(&RTC.Currencies.Eur.Value);
+            RTC.Currencies.Eur.Index = (RTC.Currencies.Eur.Value > prevEurValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+            status += 1;
+          };
+          if (currencies->Attribute("currency", "USD")) {
+            currencies->QueryFloatText(&RTC.Currencies.Usd.Value);
+            RTC.Currencies.Usd.Index = (RTC.Currencies.Usd.Value > prevUsdValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+            status += 1;
+          };
+          if (currencies->Attribute("currency", "HUF")) {
+            currencies->QueryFloatText(&RTC.Currencies.Huf.Value);
+            RTC.Currencies.Huf.Index = (RTC.Currencies.Huf.Value > prevHufValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+            status += 1;
+          };
+        };
+        dPrintf("XML parsed %s!\n", (status == 3 ? "successful" : "failed"));
+        dPrintf("Currencies: EURO %.2f | USD %.2f | HUF %.2f\n", RTC.Currencies.Eur.Value, RTC.Currencies.Usd.Value, RTC.Currencies.Huf.Value);
+        if (status < 3) return false;
+        http.end();
+        return true;
+      };
+      dPrintln(" failed!");
+      dPrintf("HTTP Status Code: %d\n", httpCode);
+      dPrintln("Error on HTTP request!");
+      http.end();
+      return false;
+    };
+
+    bool GetGCalendarData(GCalendarType type) {
+      HTTPClient http;
+      String nameDays = "";
+      String birthdayName = "";
+      String birthdayDate = "";
+      String timeMin = ConvertEpochToDateTime(RTC.NowTime, "%d-%02d-%02dT00:00:00Z");
+      String timeMax = ConvertEpochToDateTime(RTC.NowTime, "%d-%02d-%02dT23:59:59Z");
+      String url = "";
+      if (type == NAMEDAYS) {
+        url = String(String(CFG.Server.GCalendar.Url) + String(CFG.Server.GCalendar.NameDays) + "/events?timeMin=" + timeMin + "&timeMax=" + timeMax + "&orderBy=startTime&singleEvents=True&maxResults=4&key=" + String(CFG.Server.GCalendar.ApiKey));
+      } else if (type == BIRTHDAYS) {
+        timeMax = ConvertEpochToDateTime((RTC.NowTime + (183 * SecondsPerDay)), "%d-%02d-%02dT00:00:00Z");
+        url = String(String(CFG.Server.GCalendar.Url) + String(CFG.Server.GCalendar.BirthDays) + "/events?timeMin=" + timeMin + "&timeMax=" + timeMax + "&orderBy=startTime&singleEvents=True&maxResults=1&key=" + String(CFG.Server.GCalendar.ApiKey));
+      };
+      dPrintln(SeparationLine);
+      dPrintf("Connecting to GCalendar/ %s", (type == NAMEDAYS ? "Namedays" : (type == BIRTHDAYS ? "Birthdays" : "N/A")));
+      http.begin(url);
+      uint16_t httpCode = http.GET();
+      if (httpCode == HTTP_CODE_OK) {
+        dPrintln(" succes!");
+        dPrintf("HTTP Status Code: %d\n", httpCode);
+        DeserializationError error = deserializeJson(Data, http.getString());
+        dPrintf("Data size: %d byte\n", Data.memoryUsage());
+        if (error) {
+          dPrintln("Json deserialize failed!");
+          return false;
+        };
+        #if PRINT_DATA
+          dPrintln("Requested data: ");
+          serializeJsonPretty(Data, Serial);
+          dPrintln();
+        #endif
+        http.end();
+        if (Data.size() == 0) return false;
+        JsonArray rows = Data["items"].as<JsonArray>();
+        for (JsonVariant row : rows) {
+          if (row["summary"].as<String>().length() != 0) {
+            String startDate = row["start"]["date"].as<String>().substring(-5, 5);
+            String endDate = row["end"]["date"].as<String>().substring(-5, 5);
+            String nowDate = ConvertEpochToDateTime(RTC.NowTime, "%d-%02d-%02d").substring(-5, 5);
+            if (type == NAMEDAYS) {
+              String nextDate = ConvertEpochToDateTime((RTC.NowTime + SecondsPerDay), "%d-%02d-%02d").substring(-5, 5);
+              if (startDate == nowDate && endDate == nextDate) {
+                if (nameDays.length() == 0) {
+                  nameDays = row["summary"].as<String>();
+                } else {
+                  nameDays += String(", " + row["summary"].as<String>());
+                };
+              };
+            } else if (type == BIRTHDAYS) {
+              birthdayName = row["summary"].as<String>();
+              birthdayDate = String(row["description"].as<String>() + "-" + startDate);
+            };
+          };
+        };
+        RTC.GCalendar.BirthDays.Name = birthdayName.c_str();
+        RTC.GCalendar.BirthDays.Date = birthdayDate.c_str();
+        RTC.GCalendar.NameDays = nameDays.c_str();
+        dPrintln("Json serialized successful!");
+        if (type == NAMEDAYS) dPrintf("Namedays: %s\n", RTC.GCalendar.NameDays);
+        if (type == BIRTHDAYS) dPrintf("Birthday: %s (%s)\n", RTC.GCalendar.BirthDays.Name, RTC.GCalendar.BirthDays.Date);
+        return true;
+      };
+      dPrintln(" failed!");
+      dPrintf("HTTP Status Code: %d\n", httpCode);
+      dPrintln("Error on HTTP request!");
+      http.end();
+      RTC.GCalendar.NameDays = RTC.GCalendar.BirthDays.Name = RTC.GCalendar.BirthDays.Date = "";
+      return false;
+    };
+
+    bool GetData() {
+      bool result = false;
+      uint8_t runCalc = 0;
+      uint8_t retry = 0;
+      for (;;) {
+        if (GetCurrencies(String(CFG.Server.BNR))) runCalc += 1;
+        if (GetGCalendarData(NAMEDAYS)) runCalc += 1;
+        if (GetGCalendarData(BIRTHDAYS)) runCalc += 1;
+        if (runCalc == 3) {
+          result = true;
+          break;
+        };
+        if (runCalc < 3) {
+          runCalc = 0;
+          delay(1000);
+        };
+        if (++retry > 5) break;
+      };
+      return result;
+    };    
     
     String RemoveAccents(String string) {
       uint16_t i = 0;
@@ -578,7 +711,6 @@ class App {
         case CENTER: x = x - w / 2; break;
         case LEFT: default: break;
       };
-      h += (14 - h); 
       if (text.length() <= 3 && text.indexOf(".") > 0) h -= 1;
       Display.setCursor(x, (y + h));
       Display.println(text);
@@ -602,45 +734,12 @@ class App {
       return w;
     };    
 
-    bool GetData() {
-      HTTPClient http;
-      dPrintln(SeparationLine);
-      dPrint("Connecting to Data Server");
-      http.begin(String(CFG.Server.Url) + String("?key=") + String(CFG.Server.ApiKey));
-      uint16_t httpCode = http.GET();
-      if (httpCode == HTTP_CODE_OK) {
-        dPrintln(" succes!");
-        dPrint("HTTP Status Code: ");
-        dPrintln(httpCode);
-        DeserializationError error = deserializeJson(Data, http.getString());
-        dPrintf("Json data size: %d byte\n", Data.memoryUsage());
-        if (error) {
-          dPrintln(SeparationLine);
-          dPrintln("Json deserialize failed!");
-          return false;
-        };
-        #if DEBUG
-          dPrintln("Requested data: ");
-          serializeJsonPretty(Data, Serial);
-          dPrintln();
-        #endif
-        http.end();
-        return true;         
-      };
-      dPrintln(" failed!");
-      dPrint("HTTP Status Code: ");
-      dPrintln(httpCode);
-      dPrintln("Error on HTTP request!");
-      http.end();
-      return false;
-    };
-
     void DrawEmptyBattery(String message = "Az akkumulátor lemerült!") {
       uint16_t lWidth = 2;
-      uint16_t bWidth = 200;
-      uint16_t bHeight = 80;
-      uint16_t b2Width = 15;
-      uint16_t b2Height = 40;
+      uint16_t bWidth = 145;
+      uint16_t bHeight = 50;
+      uint16_t b2Width = 10;
+      uint16_t b2Height = 25;
       uint16_t bXPos1 = (CFG.Display.Width - bWidth - b2Width) / 2;
       uint16_t bYPos1 = (CFG.Display.Height - bHeight) / 2;
       uint16_t roundCorner = 8;
@@ -653,32 +752,11 @@ class App {
         roundCorner--;
       };
       Display.fillRoundRect((bXPos1 + bWidth), (bYPos1 + ((bHeight - b2Height) / 2)), b2Width, b2Height, 3, GxEPD_BLACK);
-      DrawString((CFG.Display.Width / 2 - b2Width  + 3 ), ((CFG.Display.Height / 4) * 3), message, REGULAR, BLACK, CENTER, NORMAL);
-    };
-
-    void DrawHeader(String title = "Számlafizetési kötelezettségek") {
-      GetTime();
-      char nowDate[100];
-      strftime(nowDate, sizeof(nowDate), "%Y.%m.%d. %H:%M:%S", &RTC.TimeInfo);  
-      uint16_t x = 13;
-      uint16_t y = 6;
-      if (Data.containsKey("title")) title = Data["title"].as<String>();
-      uint16_t txtWidth = TextWidth(title, BOLD, UPPERCASE);
-      Display.fillRect(x, 0, (x + txtWidth + 8), 28, GxEPD_YELLOW);
-      DrawString((x + 10), y, title, BOLD, BLACK, LEFT, UPPERCASE);
-      DrawString((x + txtWidth + 30), y, "Frissítés: " + String(nowDate), REGULAR, BLACK, LEFT, NORMAL);
-      txtWidth = TextWidth(String(mBatteryPercentage) + "%", REGULAR, NORMAL);
-      x = (CFG.Display.Width - txtWidth - 48); 
-      DrawString((CFG.Display.Width - 14), y, String(mBatteryPercentage) + "%", REGULAR, BLACK, RIGHT, NORMAL);
-      y += 5; 
-      Display.drawRect((x + 7), y, 19, 10, GxEPD_BLACK);
-      Display.fillRect((x + 26), (y + 2), 2, 6, GxEPD_BLACK);
-      Display.fillRect((x + 9), (y + 2), (15 * mBatteryPercentage/100.0), 6, ((mBatteryPercentage <= 40) ? GxEPD_YELLOW : GxEPD_BLACK));
+      DrawString((CFG.Display.Width / 2 - b2Width + 3 ), ((CFG.Display.Height / 4) * 3 + 5), message, REGULAR, BLACK, CENTER, NORMAL);
     };
 
     void DrawData() {
-      DrawHeader();
-      int maxItems = Data["data"]["sum"]["max_items"];
+      /*int maxItems = Data["data"]["sum"]["max_items"];
       int unpaidItems = Data["data"]["sum"]["unpaid"];
       int debitItems = Data["data"]["sum"]["debit"];
       int paidItems = Data["data"]["sum"]["paid"];
@@ -777,15 +855,15 @@ class App {
       Display.fillRect(*rowXPos1, (CFG.Display.Height - 3), (*rowXPos1 + w - 11), CFG.Display.Height, GxEPD_YELLOW);
       Display.getTextBounds(note, x_2, y, &x1, &y1, &w, &h);
       Display.setCursor((x_2 - w), (y + h - (debitItems == 0 || (unpaidItems == 0 && paidItems == 1 ) ? 2 : 0)));
-      Display.println(note);
+      Display.println(note);*/
     };
 
-    void RefreshEinkDisplay(bool state = true) {
+    void UpdateEinkDisplay(bool state = true) {
       if (state) {
         if (GetData()) {
           DisconnectWiFi();
           dPrintln(SeparationLine);
-          dPrintln("Display refresh start");
+          dPrintln("Display updating...");
           Display.setFullWindow();
           Display.firstPage();
           do {
@@ -793,10 +871,9 @@ class App {
             DrawData();
           } while (Display.nextPage());
           Display.powerOff();
-          dPrintln("Display refresh end");
-          dPrintln(SeparationLine);
-          dPrintln("Turn off the display");
-          RTC.LastRefreshTime = RTC.NowTime;
+          dPrintln("Display updated");
+          dPrintln("Display turned off");
+          RTC.LastSleepTime = RTC.NowTime;
           return;
         };
         dPrintln("Restarting device...");
@@ -806,7 +883,7 @@ class App {
         GoToDeepSleep(10);
       };
       dPrintln(SeparationLine);
-      dPrintln("Display refresh start");
+      dPrintln("Display updating...");
       Display.setFullWindow();
       Display.firstPage();
       do {
@@ -814,9 +891,9 @@ class App {
         DrawEmptyBattery();
       } while (Display.nextPage());
       Display.powerOff();
-      dPrintln("Display refresh end");
+      dPrintln("Display updated");
       dPrintln(SeparationLine);
-      dPrintln("Turn off the display");
+      dPrintln("Display turned off");
     };
 
     void PrintMessageIfFirstBootOrNot(String message, bool state) {
@@ -836,19 +913,17 @@ class App {
   public: 
     void Init() {
       InitConfig();
-      dBegin(CFG.BaudRate);
-      dSetDebugOutput(true);
-      dSetDebugOutput(false);
+      dBegin(CFG.BaudIndex);
       for (uint8_t i = 0; i < 3; i++) dPrintln();
       pinMode(SS, OUTPUT);
       pinMode(CFG.GPIO.Led, OUTPUT);
       digitalWrite(CFG.GPIO.Led, LOW);
-      Display.init();
-      Display.setRotation(0);
+      Display.init(CFG.BaudIndex);
+      Display.setRotation(1);
       BootCount++;
-      InitLogger();
       if (MeasureBattery() == false) {
-        RefreshEinkDisplay(false);
+        DeviceInfo(false);
+        UpdateEinkDisplay(false);
         GoToDeepSleep(365 * SecondsPerDay);
       };
       ConnectWiFi();
@@ -861,7 +936,7 @@ class App {
         PrintEpochTime("End: ", RTC.NowTime);
       };
       bool wakeupReason = WakeupReason(ESP_SLEEP_WAKEUP_EXT0);
-      if (wakeupReason) RefreshEinkDisplay(true);
+      if (wakeupReason) UpdateEinkDisplay(true);
       long executionTimeLimit = CFG.Scheduler.ExecutionTimeLimit * SecondsPerHour;
       long halfSecPeriodFactor = (CFG.Scheduler.Period * SecondsPerHour) / 2;
       long delta = ((RTC.NowTime - RTC.ScheduledDateTime) + halfSecPeriodFactor) * -1;
@@ -872,7 +947,7 @@ class App {
         PrintMessageIfFirstBootOrNot("after due time", wakeupReason);
         PrintEpochTime("Over time: ", overTime);
         unsigned long lastScheduledDateTime = RTC.ScheduledDateTime - SecondsPerDay;
-        if (RTC.LastRefreshTime <= lastScheduledDateTime) RefreshEinkDisplay(true);
+        if (RTC.LastSleepTime <= lastScheduledDateTime) UpdateEinkDisplay(true);
       } else {
         PrintMessageIfFirstBootOrNot("before time", wakeupReason);
         PrintEpochTime("Time left: ", RTC.ScheduledDelay);
