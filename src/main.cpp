@@ -94,7 +94,7 @@ RTC_DATA_ATTR byte BootCount = -1;
 struct {
   uint8_t Version;
   uint8_t CpuFrequency;
-  int BaudIndex;
+  int BaudRate;
   struct {
     bool StaticIP;
     bool Accents;
@@ -659,10 +659,10 @@ class App {
         if (type == BIRTHDAYS) dPrintf("Birthday: %s (%s)\n", RTC.GCalendar.BirthDays.Name, RTC.GCalendar.BirthDays.Date);
         return true;
       };
+      http.end();
       dPrintln(" failed!");
       dPrintf("HTTP Status Code: %d\n", httpCode);
       dPrintln("Error on HTTP request!");
-      http.end();
       RTC.GCalendar.NameDays = RTC.GCalendar.BirthDays.Name = RTC.GCalendar.BirthDays.Date = "";
       return false;
     };
@@ -956,12 +956,12 @@ class App {
   public: 
     void Init() {
       InitConfig();
-      dBegin(CFG.BaudIndex);
+      dBegin(CFG.BaudRate);
       for (uint8_t i = 0; i < 3; i++) dPrintln();
       pinMode(SS, OUTPUT);
       pinMode(CFG.GPIO.Led, OUTPUT);
       digitalWrite(CFG.GPIO.Led, LOW);
-      Display.init(CFG.BaudIndex);
+      Display.init(CFG.BaudRate);
       Display.setRotation(1);
       BootCount++;
       if (MeasureBattery() == false) {
@@ -989,8 +989,7 @@ class App {
       if (overTime <= executionTimeLimit) {
         PrintMessageIfFirstBootOrNot("after due time", wakeupReason);
         PrintEpochTime("Over time: ", overTime);
-        unsigned long lastScheduledDateTime = RTC.ScheduledDateTime - SecondsPerDay;
-        if (RTC.LastSleepTime <= lastScheduledDateTime) UpdateEinkDisplay(true);
+        if (RTC.LastSleepTime <= (RTC.ScheduledDateTime - SecondsPerDay)) UpdateEinkDisplay(true);
       } else {
         PrintMessageIfFirstBootOrNot("before time", wakeupReason);
         PrintEpochTime("Time left: ", RTC.ScheduledDelay);
