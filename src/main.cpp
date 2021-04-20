@@ -17,14 +17,18 @@
 #include "esp_bt.h"
 #include "esp_bt_main.h"
 #include "Berkelium5pt7b.h"
-#include "UdvarhelySansBold7pt7b.h"
 #include "UdvarhelySansRegular7pt7b.h"
+#include "UdvarhelySansBold7pt7b.h"
+#include "UdvarhelySansRegular9pt7b.h"
+#include "UdvarhelySansBold9pt7b.h"
+#include "UdvarhelySansRegular16pt7b.h"
+#include "UdvarhelySansBold16pt7b.h"
 
 // ----------------------------------------
 
-#define DEBUG true
+#define DEBUG false
 #define PRINT_DATA false
-#define ConfigVersion 124
+#define ConfigVersion 1
 
 #define uSToSFactor 1000000UL
 #define SecondsPerMinute 60UL
@@ -62,27 +66,31 @@ typedef struct {
   struct {
     struct {
       float Value;
+      float PrevValue;
       int8_t Index;
     } Eur;
     struct {
       float Value;
+      float PrevValue;
       int8_t Index;
     } Usd;
     struct {
       float Value;
+      float PrevValue;
       int8_t Index;
     } Huf;
     struct {
       float Value;
+      float PrevValue;
       int8_t Index;
     } Btc;    
   } Currencies;
   struct {
-    const char* NameDays;
+    char NameDays[30];
     struct {
-      const char* Name;
-      const char* Date;
-    } BirthDays;
+      char Name[20];
+      char Date[20];
+    } BirthDay;
   } GCalendar;
 } RTCMemory;
 
@@ -150,7 +158,7 @@ enum FontColor {WHITE, BLACK};
 enum TextAlignment {LEFT, RIGHT, CENTER} ;
 enum TextLetterCase {NORMAL, LOWERCASE, UPPERCASE};
 enum CurrencyType {BNR, BTC};
-enum CurrencyRateIndex {NONE_INDEX, UP_INDEX, DOWN_INDEX};
+enum CurrencyRateIndex {UP_INDEX, DOWN_INDEX};
 enum GCalendarType {NAMEDAYS, BIRTHDAYS};
 enum GCalendarFeature {TODAY, UPCOMING};
 
@@ -413,7 +421,7 @@ class App {
       dPrintln(ConvertEpochToDateTime(epochtime));
     };
 
-    String ConvertEpochToDateTime(unsigned long epochtime, const char* format = "%d.%02d.%02d %02d:%02d:%02d") {
+    String ConvertEpochToDateTime(unsigned long epochtime = RTC.NowTime, const char* format = "%d.%02d.%02d %02d:%02d:%02d") {
       char dateTime[100];
       uint8_t daysOfMonth[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
       long year, daysTillNow, extraTime, extraDays, index, day, month, hours, minutes, seconds, flag = 0;
@@ -508,14 +516,6 @@ class App {
       HTTPClient http;
       if (type == BNR) {
         XMLDocument xml;
-        float prevEurValue = RTC.Currencies.Eur.Value;
-        float prevUsdValue = RTC.Currencies.Usd.Value;
-        float prevHufValue = RTC.Currencies.Huf.Value;
-        if (BootCount == 0) {
-          RTC.Currencies.Eur.Index = NONE_INDEX;
-          RTC.Currencies.Usd.Index = NONE_INDEX;
-          RTC.Currencies.Huf.Index = NONE_INDEX;
-        };
         dPrintln(SeparationLine);
         dPrint("Connecting to BNR Server");
         http.begin(String(CFG.Server.BNR));
@@ -524,8 +524,8 @@ class App {
           dPrintln(" succes!");
           dPrintf("HTTP Status Code: %d\n", httpCode);
           String httpString = http.getString();
-          dPrintf("Data size: %d byte\n", httpString.length());
-          if (xml.Parse(httpString.c_str(), 15000U) != XML_SUCCESS) {
+          dPrintf("Data size: %d byte\n", http.getSize());
+          if (xml.Parse(httpString.c_str(), 20000U) != XML_SUCCESS) {
             dPrintln("XML parsing failed!");
             return false; 
           };
@@ -534,22 +534,28 @@ class App {
           for (; currencies != NULL; currencies = currencies->NextSiblingElement()) {
             if (currencies->Attribute("currency", "EUR")) {
               currencies->QueryFloatText(&RTC.Currencies.Eur.Value);
-              RTC.Currencies.Eur.Index = (RTC.Currencies.Eur.Value > prevEurValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+              if (RTC.Currencies.Eur.Index == 0) RTC.Currencies.Eur.Index = UP_INDEX;
+              RTC.Currencies.Eur.Index = RTC.Currencies.Eur.PrevValue < RTC.Currencies.Eur.Value ? UP_INDEX : DOWN_INDEX;
+              if (RTC.Currencies.Eur.PrevValue != RTC.Currencies.Eur.Value) RTC.Currencies.Eur.PrevValue = RTC.Currencies.Eur.Value;
               status += 1;
             };
             if (currencies->Attribute("currency", "USD")) {
               currencies->QueryFloatText(&RTC.Currencies.Usd.Value);
-              RTC.Currencies.Usd.Index = (RTC.Currencies.Usd.Value > prevUsdValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+              if (RTC.Currencies.Usd.Index == 0) RTC.Currencies.Usd.Index = UP_INDEX;
+              RTC.Currencies.Usd.Index = RTC.Currencies.Usd.PrevValue < RTC.Currencies.Usd.Value ? UP_INDEX : DOWN_INDEX;
+              if (RTC.Currencies.Usd.PrevValue != RTC.Currencies.Usd.Value) RTC.Currencies.Usd.PrevValue = RTC.Currencies.Usd.Value;              
               status += 1;
             };
             if (currencies->Attribute("currency", "HUF")) {
               currencies->QueryFloatText(&RTC.Currencies.Huf.Value);
-              RTC.Currencies.Huf.Index = (RTC.Currencies.Huf.Value > prevHufValue ? DOWN_INDEX : (RTC.Currencies.Eur.Value == prevEurValue ? NONE_INDEX : UP_INDEX));
+              if (RTC.Currencies.Huf.Index == 0) RTC.Currencies.Huf.Index = UP_INDEX;
+              RTC.Currencies.Huf.Index = RTC.Currencies.Huf.PrevValue < RTC.Currencies.Huf.Value ? UP_INDEX : DOWN_INDEX;
+              if (RTC.Currencies.Huf.PrevValue != RTC.Currencies.Huf.Value) RTC.Currencies.Huf.PrevValue = RTC.Currencies.Huf.Value;               
               status += 1;
             };
           };
           dPrintf("XML parsed %s!\n", (status == 3 ? "successful" : "failed"));
-          dPrintf("EURO %.2f | USD %.2f | HUF %.2f\n", RTC.Currencies.Eur.Value, RTC.Currencies.Usd.Value, RTC.Currencies.Huf.Value);
+          dPrintf("EURO %.4f | USD %.4f | HUF %.4f\n", RTC.Currencies.Eur.Value, RTC.Currencies.Usd.Value, RTC.Currencies.Huf.Value);
           if (status < 3) return false;
           http.end();
           return true;
@@ -560,9 +566,8 @@ class App {
         dPrintln("Error on HTTP request!");
         return false;
       } else if (type == BTC) {
-        float prevBtcValue = RTC.Currencies.Btc.Value;
         dPrintln(SeparationLine);
-        dPrint("Connecting to Pitpay Server");
+        dPrint("Connecting to Bitpay Server");
         http.begin(String(CFG.Server.BTC));
         uint16_t httpCode = http.GET();
         if (httpCode == HTTP_CODE_OK) {
@@ -582,7 +587,9 @@ class App {
           http.end();
           if (Data.size() == 0) return false;
           RTC.Currencies.Btc.Value = Data["data"]["rate"];
-          RTC.Currencies.Btc.Index = (RTC.Currencies.Btc.Value > prevBtcValue ? DOWN_INDEX : (RTC.Currencies.Btc.Value == prevBtcValue ? NONE_INDEX : UP_INDEX));
+          if (RTC.Currencies.Btc.Index == 0) RTC.Currencies.Btc.Index = UP_INDEX;
+          RTC.Currencies.Btc.Index = RTC.Currencies.Btc.PrevValue < RTC.Currencies.Btc.Value ? UP_INDEX : DOWN_INDEX;
+          if (RTC.Currencies.Btc.PrevValue != RTC.Currencies.Btc.Value) RTC.Currencies.Btc.PrevValue = RTC.Currencies.Btc.Value;
           dPrintln("Json serialized successful!");
           dPrintf("BTC: %.2f\n", RTC.Currencies.Btc.Value);
           return true;
@@ -647,23 +654,28 @@ class App {
               };
             } else if (type == BIRTHDAYS) {
               birthdayName = row["summary"].as<String>();
-              birthdayDate = String(row["description"].as<String>() + "-" + startDate);
+              String tBirthdayDate = String(row["description"].as<String>() + "-" + startDate);
+              birthdayDate = tBirthdayDate;
+              birthdayDate.replace("-", ".");
             };
           };
         };
-        RTC.GCalendar.BirthDays.Name = birthdayName.c_str();
-        RTC.GCalendar.BirthDays.Date = birthdayDate.c_str();
-        RTC.GCalendar.NameDays = nameDays.c_str();
         dPrintln("Json serialized successful!");
-        if (type == NAMEDAYS) dPrintf("Namedays: %s\n", RTC.GCalendar.NameDays);
-        if (type == BIRTHDAYS) dPrintf("Birthday: %s (%s)\n", RTC.GCalendar.BirthDays.Name, RTC.GCalendar.BirthDays.Date);
+        if (type == NAMEDAYS) {
+          strcpy(RTC.GCalendar.NameDays, nameDays.c_str());
+          dPrintf("Namedays: %s\n", RTC.GCalendar.NameDays);
+        };
+        if (type == BIRTHDAYS) {
+          strcpy(RTC.GCalendar.BirthDay.Name, birthdayName.c_str());
+          strcpy(RTC.GCalendar.BirthDay.Date, birthdayDate.c_str());
+          dPrintf("Birthday: %s (%s)\n", RTC.GCalendar.BirthDay.Name, RTC.GCalendar.BirthDay.Date);
+        };
         return true;
       };
       http.end();
       dPrintln(" failed!");
       dPrintf("HTTP Status Code: %d\n", httpCode);
       dPrintln("Error on HTTP request!");
-      RTC.GCalendar.NameDays = RTC.GCalendar.BirthDays.Name = RTC.GCalendar.BirthDays.Date = "";
       return false;
     };
 
@@ -730,7 +742,7 @@ class App {
       return String(text);
     };
 
-    void DrawString(int x, int y, String text, FontStyle style = REGULAR, FontColor color = BLACK, TextAlignment align = LEFT, TextLetterCase letter = NORMAL) {
+    uint16_t DrawString(int16_t x, int16_t y, String text, const GFXfont *font, FontColor color = BLACK, TextAlignment align = LEFT, TextLetterCase letter = NORMAL) {
       int16_t x1, y1;
       uint16_t w, h;
       if (CFG.Enable.Accents == false) text = RemoveAccents(text);
@@ -739,10 +751,7 @@ class App {
         case LOWERCASE: text.toLowerCase(); break;
         default: break;
       };
-      switch (style) {
-        case BOLD: Display.setFont(&UdvarhelySansBold7pt7b); break;
-        case REGULAR: default: Display.setFont(&UdvarhelySansRegular7pt7b); break;
-      };
+      Display.setFont(font);
       switch (color) {
         case WHITE: Display.setTextColor(GxEPD_WHITE); break;
         case BLACK: default: Display.setTextColor(GxEPD_BLACK); break;      
@@ -754,19 +763,16 @@ class App {
         case CENTER: x = x - w / 2; break;
         case LEFT: default: break;
       };
-      if (text.length() <= 3 && text.indexOf(".") > 0) h -= 1;
       Display.setCursor(x, (y + h));
-      Display.println(text);
+      Display.println(text.c_str());
+      return x + TextWidth(text, font, letter);
     };
 
-    uint16_t TextWidth(String text, FontStyle style = REGULAR, TextLetterCase letter = NORMAL) {
+    uint16_t TextWidth(String text, const GFXfont *font, TextLetterCase letter = NORMAL) {
       int16_t x1, y1;
       uint16_t w, h;
       if (CFG.Enable.Accents == false) text = RemoveAccents(text);
-      switch(style) {
-        case BOLD: Display.setFont(&UdvarhelySansBold7pt7b); break;
-        case REGULAR: default: Display.setFont(&UdvarhelySansRegular7pt7b); break;
-      }; 
+      Display.setFont(font);
       switch(letter) {
         case UPPERCASE: text.toUpperCase(); break;
         case LOWERCASE: text.toLowerCase(); break;
@@ -775,18 +781,36 @@ class App {
       Display.setTextWrap(false);
       Display.getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
       return w;
-    };    
+    }; 
 
-    void DrawEmptyBattery(String message = "Az akkumulátor lemerült!") {
-      uint16_t lWidth = 2;
-      uint16_t bWidth = 145;
-      uint16_t bHeight = 50;
-      uint16_t b2Width = 10;
-      uint16_t b2Height = 25;
-      uint16_t bXPos1 = (CFG.Display.Width - bWidth - b2Width) / 2;
-      uint16_t bYPos1 = (CFG.Display.Height - bHeight) / 2;
-      uint16_t roundCorner = 8;
-      for (uint16_t i = 1; i <= lWidth; i++) {
+    uint16_t DrawIndex(int16_t x, int16_t y, uint8_t index, FontColor color) {
+      uint8_t indexW = 10;
+      uint8_t indexH = 7;
+      uint16_t indexColor = GxEPD_BLACK;
+      switch (color) {
+        case WHITE: indexColor = GxEPD_WHITE; break;
+        case BLACK: indexColor = GxEPD_BLACK; break;      
+      };
+      int16_t x0, y0, x1, y1, x2, y2;
+      x0 = x;
+      x1 = x + (indexW / 2);
+      x2 = x + indexW;
+      y0 = y2 = index == 1 ? y + indexH : y;
+      y1 = index == 1 ? y : y + indexH;
+      Display.fillTriangle(x0, y0, x1, y1, x2, y2, indexColor);        
+      return x + indexW;
+    };
+
+    void DrawEmptyBattery() {
+      uint8_t lWidth = 2;
+      uint8_t bWidth = 145;
+      uint8_t bHeight = 50;
+      uint8_t b2Width = 10;
+      uint8_t b2Height = 25;
+      uint8_t bXPos1 = (CFG.Display.Width - bWidth - b2Width) / 2;
+      uint8_t bYPos1 = (CFG.Display.Height - bHeight) / 2;
+      uint8_t roundCorner = 8;
+      for (uint8_t i = 1; i <= lWidth; i++) {
         Display.drawRoundRect(bXPos1, bYPos1, bWidth, bHeight, roundCorner, GxEPD_BLACK);
         bXPos1++; 
         bYPos1++;
@@ -795,110 +819,96 @@ class App {
         roundCorner--;
       };
       Display.fillRoundRect((bXPos1 + bWidth), (bYPos1 + ((bHeight - b2Height) / 2)), b2Width, b2Height, 3, GxEPD_BLACK);
-      DrawString((CFG.Display.Width / 2 - b2Width + 3 ), ((CFG.Display.Height / 4) * 3 + 5), message, REGULAR, BLACK, CENTER, NORMAL);
+      DrawString((CFG.Display.Width / 2 - b2Width + 3 ), ((CFG.Display.Height / 4) * 3 + 5), String("Az akkumulátor lemerült!"), &UdvarhelySansRegular7pt7b, BLACK, CENTER, NORMAL);
     };
 
     void DrawData() {
-      /*int maxItems = Data["data"]["sum"]["max_items"];
-      int unpaidItems = Data["data"]["sum"]["unpaid"];
-      int debitItems = Data["data"]["sum"]["debit"];
-      int paidItems = Data["data"]["sum"]["paid"];
-      JsonArray rows = Data["data"]["debit"].as<JsonArray>();  
-      FontStyle fontStyle[5] = {REGULAR, BOLD, REGULAR, REGULAR, REGULAR};
-      TextAlignment textAlignment[5] = {RIGHT, LEFT, LEFT, RIGHT, RIGHT};
-      TextLetterCase textLetterCase[5] = {NORMAL, UPPERCASE, NORMAL, NORMAL, NORMAL};
-      uint16_t headerYStart = 28;
-      uint16_t colXPos[5] = {38, 50, 362, 574, 622};
-      uint16_t lineXPos1 = 13;
-      uint16_t* lineYPos1 = &headerYStart;
-      uint16_t lineXPos2 = (CFG.Display.Width - lineXPos1);
-      uint16_t* lineYPos2 = lineYPos1;
-      Display.drawLine(lineXPos1, *lineYPos1, lineXPos2, *lineYPos2, GxEPD_BLACK);
-      JsonArray dataTitle = Data["data"]["header"].as<JsonArray>();
-      int i = 0;
-      for (JsonVariant title : dataTitle) {
-        DrawString(colXPos[i], (headerYStart + (debitItems < maxItems ? 1 : 5)), title.as<String>(), REGULAR, BLACK, textAlignment[i], NORMAL);
-        i++;
-      };
-      *lineYPos1 += (debitItems<maxItems ? 22 : 28);
-      Display.drawLine(lineXPos1, *lineYPos1, lineXPos2, *lineYPos2, GxEPD_BLACK);
-      uint16_t rowSpaceH = 3;
-      uint16_t rowH = 22;
-      uint16_t rowYStart = (*lineYPos1 + rowSpaceH + 2);
-      uint16_t* rowXPos1 = &lineXPos1;
-      uint16_t rowYPos1 = rowYStart;
-      uint16_t rowXPos2 = (CFG.Display.Width - (lineXPos1 * 2) + 1);
-      uint16_t rowYPos2 = rowH;
-      uint16_t circleXPos = (CFG.Display.Width - lineXPos1 - 12);
-      int nr = 1;
-      int rowStyle = 1;
-      for (JsonVariant row : rows) {
-        if (row[3] == 2 && rowStyle != row[3] && debitItems < maxItems) {
-          for (uint16_t xPos = lineXPos1; xPos <= lineXPos2; xPos += 4) Display.drawLine(xPos, rowYPos1, (xPos + 2), rowYPos1, GxEPD_BLACK);
-          rowYPos1 += (rowSpaceH + 1);
-          rowStyle = row[3];
-        };
-        if (row[3] == 3 && rowStyle != row[3]) {
-          Display.drawLine(lineXPos1, rowYPos1, lineXPos2, rowYPos1, GxEPD_BLACK);
-          rowYPos1 += (rowSpaceH + 1);
-          rowStyle = row[3];
-        };
-        if (row[3] == 2) Display.fillRect(*rowXPos1, rowYPos1, rowXPos2, rowYPos2, GxEPD_YELLOW);
-        DrawString(colXPos[0], (rowYPos1 + 1), String(nr) + ".", fontStyle[0], BLACK, RIGHT, textLetterCase[0]);
-        for (int j = 0; j <= 2; j++) {
-          DrawString(colXPos[j + 1], (rowYPos1 + 1), row[j].as<String>(), (row[3] == 2 ? fontStyle[j + 1] : REGULAR), BLACK, textAlignment[j + 1], textLetterCase[j + 1]);
-          if (j == 0 && row[4] == 1) {
-            String badgeText = "AUTO";
-            int badgeXPos1 = (colXPos[1] + TextWidth(row[0].as<String>(), (row[3] == 2 ? fontStyle[j + 1] : REGULAR), UPPERCASE) + 7);
-            int badgeYPos1 = (rowYPos1 + 6);
-            int16_t bX1, bY1;
-            uint16_t bW, bH;
-            Display.setTextWrap(false);
-            Display.setFont(&Berkelium5pt7b);
-            Display.setTextColor((row[3] == 2 ? GxEPD_YELLOW : GxEPD_BLACK));
-            Display.getTextBounds(badgeText, 0, 0, &bX1, &bY1, &bW, &bH);             
-            int badgeXPos2 = (bW + 8);
-            int badgeYPos2 = 11;
-            Display.fillRoundRect(badgeXPos1, badgeYPos1, badgeXPos2, badgeYPos2, 1, (row[3] == 2 ? GxEPD_BLACK : GxEPD_YELLOW));
-            Display.setCursor((badgeXPos1 + 4), (badgeYPos1 + bH + 1));
-            Display.println(badgeText);
-          };
-        };
-        uint16_t circleYPos = (rowYPos1 + rowH / 2);
-        Display.fillCircle(circleXPos, circleYPos, 5, GxEPD_WHITE);
-        Display.drawCircle(circleXPos, circleYPos, 5, GxEPD_BLACK);
-        if (row[3] == 2) {
-          Display.fillCircle(circleXPos, circleYPos, 2, GxEPD_YELLOW);
-        } else if (row[3] == 3) {
-          Display.fillCircle(circleXPos, circleYPos, 2, GxEPD_BLACK);
-        };
-        rowYPos1 += (rowH + rowSpaceH);
-        nr++;
-      };
-      for (int xPos = lineXPos1; xPos <= lineXPos2; xPos += 4) Display.drawLine(xPos, rowYPos1, (xPos + 2), rowYPos1, GxEPD_BLACK);
-      int16_t x1, y1;
-      uint16_t w, h;
-      uint16_t y = 368;
-      uint8_t x_1 = 14;
-      uint16_t x_2 = 627;
-      String rest = Data["data"]["note"]["sum"];
-      String note = Data["data"]["note"]["note"];
-      if (CFG.Enable.Accents == false) { 
-        rest = RemoveAccents(rest);
-        note = RemoveAccents(note);
-      };
-      rest.toUpperCase();
-      note.toUpperCase();
-      Display.setTextWrap(false);
-      Display.setFont(&Berkelium5pt7b);
-      Display.setTextColor(GxEPD_BLACK);
-      Display.getTextBounds(rest, x_1, y, &x1, &y1, &w, &h);
-      Display.setCursor(x_1, (y + h - (debitItems == 0 || (unpaidItems == 0 && paidItems == 1) ? 2 : 0)));
-      Display.println(rest); 
-      Display.fillRect(*rowXPos1, (CFG.Display.Height - 3), (*rowXPos1 + w - 11), CFG.Display.Height, GxEPD_YELLOW);
-      Display.getTextBounds(note, x_2, y, &x1, &y1, &w, &h);
-      Display.setCursor((x_2 - w), (y + h - (debitItems == 0 || (unpaidItems == 0 && paidItems == 1 ) ? 2 : 0)));
-      Display.println(note);*/
+      uint8_t space = 6;
+      uint8_t marginW = 7;
+      uint8_t headerW = CFG.Display.Width;
+      uint8_t headerH = 16;
+      uint8_t headerContentH = 8;
+      uint8_t headerMarginH = (headerH - headerContentH) / 2;
+      Display.fillRect(0, 0, headerW, headerH, GxEPD_BLACK);
+      DrawString(marginW, headerMarginH, String("Frissites: " + ConvertEpochToDateTime()), &Berkelium5pt7b, WHITE, LEFT, UPPERCASE);  
+      uint8_t batteryW = 18;
+      uint8_t batteryX = headerW - batteryW - marginW;
+      uint8_t batteryY = headerMarginH;
+      DrawString((batteryX - 4), headerMarginH, String(String(mBatteryPercentage) + "%"), &Berkelium5pt7b, WHITE, RIGHT, UPPERCASE);
+      Display.drawRect(batteryX, batteryY, (batteryW - 2), headerContentH, GxEPD_WHITE);
+      Display.fillRect((batteryX + batteryW - 2), (batteryY + 2), 2, (headerContentH / 2), GxEPD_WHITE);
+      Display.fillRect((batteryX + 2), (batteryY + 2), ceil(((batteryW - 6) * mBatteryPercentage) / 100.0), (headerContentH / 2), GxEPD_WHITE);
+      uint8_t displayYPos = headerH + space;
+      // ----------------------------------------
+      uint8_t dateVLineH = 50;
+      char month[3], day[3];
+      strftime(month, sizeof(month), "%m", &RTC.TimeInfo);
+      strftime(day, sizeof(day), "%d", &RTC.TimeInfo);
+      uint16_t monthW = TextWidth(String(month), &UdvarhelySansBold16pt7b, NORMAL);
+      uint16_t dayW = TextWidth(String(day), &UdvarhelySansBold16pt7b, NORMAL);
+      uint16_t dateTextW = max(monthW, dayW);
+      uint16_t dateTextXPos = space + (dateTextW / 2);
+      DrawString(dateTextXPos, (displayYPos + 1), String(month), &UdvarhelySansRegular16pt7b, BLACK, CENTER, NORMAL);
+      DrawString(dateTextXPos, (displayYPos + (dateVLineH / 2) + 2), String(day), &UdvarhelySansBold16pt7b, BLACK, CENTER, NORMAL); 
+      // ----------------------------------------
+      uint8_t displayXPos = marginW + dateTextW + 10;
+      uint8_t dateVLineY1 = displayYPos;
+      uint8_t dateVLineY2 = displayYPos + dateVLineH;
+      Display.drawLine(displayXPos, displayYPos, displayXPos, dateVLineY2, GxEPD_BLACK);
+      displayXPos += 15;
+      // ----------------------------------------
+      uint8_t namesTextY1 = dateVLineY1;
+      uint8_t namesTextY2 = namesTextY1 + 9;
+      uint8_t namesTextY3 = namesTextY1 + (dateVLineH / 2) + 1;
+      uint8_t namesTextY4 = namesTextY3 + 10;
+      DrawString(displayXPos, namesTextY1, String("Szuletesnap"), &Berkelium5pt7b, BLACK, LEFT, UPPERCASE);
+      uint16_t birthDayXPos = DrawString(displayXPos, namesTextY2, String(RTC.GCalendar.BirthDay.Name), &UdvarhelySansBold7pt7b, BLACK, LEFT, UPPERCASE);
+      DrawString(birthDayXPos, (namesTextY2 + 2), String(" | " + String(RTC.GCalendar.BirthDay.Date)), &Berkelium5pt7b, BLACK, LEFT, NORMAL);
+      DrawString(displayXPos, namesTextY3, String("Nevnap(ok)"), &Berkelium5pt7b, BLACK, LEFT, UPPERCASE);
+      TextLetterCase namesLetterCase = String(RTC.GCalendar.NameDays).length() <= 20 ? UPPERCASE : NORMAL;
+      DrawString(displayXPos, namesTextY4, String(RTC.GCalendar.NameDays), &UdvarhelySansBold7pt7b, BLACK, LEFT, namesLetterCase);
+      // ----------------------------------------
+      displayYPos = dateVLineY2 + space;
+      Display.drawLine(0, displayYPos, CFG.Display.Width, displayYPos, GxEPD_BLACK);
+      displayYPos += space;
+      // ----------------------------------------
+      uint8_t currencyXPos = marginW;
+      uint8_t currencyY1Pos = displayYPos + 2;
+      uint8_t currencyY2Pos = currencyY1Pos + 20;
+      String currencyEUR = String(RTC.Currencies.Eur.Value, 3U);
+      String currencyUSD = String(RTC.Currencies.Usd.Value, 3U);
+      currencyEUR = currencyEUR.substring(0, 4);
+      currencyEUR.replace(".", ",");
+      currencyUSD = currencyUSD.substring(0, 4);
+      currencyUSD.replace(".", ",");    
+      uint16_t currencyEURXPos = DrawString(currencyXPos, currencyY1Pos, String("Eur"), &UdvarhelySansBold9pt7b, BLACK, LEFT, UPPERCASE);
+      uint16_t currencyUSDXPos = DrawString(currencyXPos, currencyY2Pos, String("Usd"), &UdvarhelySansBold9pt7b, BLACK, LEFT, UPPERCASE);
+      currencyXPos = max(currencyEURXPos, currencyUSDXPos) + space;
+      uint16_t currencyEURIndexXPos = DrawIndex(currencyXPos, (currencyY1Pos + 3), RTC.Currencies.Eur.Index, BLACK);
+      uint16_t currencyUSDIndexXPos = DrawIndex(currencyXPos, (currencyY2Pos + 3), RTC.Currencies.Usd.Index, BLACK);
+      currencyXPos = max(currencyEURIndexXPos, currencyUSDIndexXPos) + space;
+      uint16_t currencyEURValXPos = DrawString(currencyXPos, (currencyY1Pos - 3), currencyEUR, &UdvarhelySansRegular9pt7b, BLACK, LEFT, NORMAL);
+      uint16_t currencyUSDValXPos = DrawString(currencyXPos, (currencyY2Pos - 3), currencyUSD, &UdvarhelySansRegular9pt7b, BLACK, LEFT, NORMAL);
+      // ----------------------------------------
+      currencyXPos = max(currencyEURValXPos, currencyUSDValXPos) + 15;
+      uint8_t currencyVLineY1 = displayYPos;
+      uint8_t currencyVLineY2 = CFG.Display.Height - space;
+      Display.drawLine(currencyXPos, currencyVLineY1, currencyXPos, currencyVLineY2, GxEPD_BLACK);
+      currencyXPos = currencyXPos + 15;
+      // ----------------------------------------
+      String currencyHUF = String(RTC.Currencies.Huf.Value, 3U);
+      String currencyBTC = String(RTC.Currencies.Btc.Value);
+      currencyHUF = currencyHUF.substring(0, 4);
+      currencyHUF.replace(".", ",");
+      currencyBTC.replace(".", ",");
+      uint16_t currencyHUFXPos = DrawString(currencyXPos, currencyY1Pos, String("Huf"), &UdvarhelySansBold9pt7b, BLACK, LEFT, UPPERCASE);
+      uint16_t currencyBTCXPos = DrawString(currencyXPos, currencyY2Pos, String("Btc"), &UdvarhelySansBold9pt7b, BLACK, LEFT, UPPERCASE);
+      currencyXPos = max(currencyHUFXPos, currencyBTCXPos) + space;
+      uint16_t currencyHUFIndexXPos = DrawIndex(currencyXPos, (currencyY1Pos + 3), RTC.Currencies.Huf.Index, BLACK);
+      uint16_t currencyBTCIndexXPos = DrawIndex(currencyXPos, (currencyY2Pos + 3), RTC.Currencies.Btc.Index, BLACK);
+      currencyXPos = max(currencyHUFIndexXPos, currencyBTCIndexXPos) + space;
+      DrawString(currencyXPos, (currencyY1Pos - 5), String(currencyHUF + "*"), &UdvarhelySansRegular9pt7b, BLACK, LEFT, NORMAL);
+      DrawString(currencyXPos, (currencyY2Pos - 3), currencyBTC, &UdvarhelySansRegular9pt7b, BLACK, LEFT, NORMAL);
     };
 
     void UpdateEinkDisplay(bool state = true) {
@@ -962,7 +972,7 @@ class App {
       pinMode(CFG.GPIO.Led, OUTPUT);
       digitalWrite(CFG.GPIO.Led, LOW);
       Display.init(CFG.BaudRate);
-      Display.setRotation(1);
+      Display.setRotation(3);
       BootCount++;
       if (MeasureBattery() == false) {
         DeviceInfo(false);
