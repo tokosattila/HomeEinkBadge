@@ -28,7 +28,6 @@
 
 #define DEBUG false
 #define PRINT_DATA false
-#define ConfigVersion 1
 
 #define uSToSFactor 1000000UL
 #define SecondsPerMinute 60UL
@@ -100,7 +99,6 @@ RTC_DATA_ATTR byte BootCount = -1;
 // ----------------------------------------
 
 struct {
-  uint8_t Version;
   uint8_t CpuFrequency;
   int BaudRate;
   struct {
@@ -208,9 +206,9 @@ class App {
     void InitConfig() {
       EEPROM.begin(mEEPROMSize);
       ReadEEPROM(CFG);
-      if (CFG.Version != ConfigVersion) {
+      if (DEBUG) {
         CFG = { 
-          ConfigVersion, 240, 115200, 
+          240, 115200, 
           {true, false}, 
           {LED_BUILTIN, GPIO_NUM_39, GPIO_NUM_35}, 
           {"HomeEinkBadge", "Szeklerman", "tokosmagor2012", {192, 168, 0, 51}, {255, 255, 255, 0}, {192, 168, 0, 1}, {192, 168, 0, 1}, {0, 0, 0, 0}}, 
