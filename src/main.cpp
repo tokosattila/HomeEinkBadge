@@ -15,6 +15,8 @@
 #include "esp_wifi.h"
 #include "esp_bt.h"
 #include "esp_bt_main.h"
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 #include "Berkelium5pt7b.h"
 #include "UdvarhelySansRegular7pt7b.h"
 #include "UdvarhelySansBold7pt7b.h"
@@ -24,6 +26,8 @@
 #include "UdvarhelySansBold16pt7b.h"
 
 // ----------------------------------------
+
+#define VERSION 123
 
 #define DEBUG false
 #define PRINT_DATA false
@@ -98,8 +102,11 @@ RTC_DATA_ATTR byte BootCount = -1;
 // ----------------------------------------
 
 struct {
-  uint8_t CpuFrequency;
-  int BaudRate;
+  uint8_t Version;
+  struct {
+    uint8_t Frequency;
+    unsigned long BaudRate;
+  } CPU;
   struct {
     bool StaticIP;
     bool Accents;
@@ -205,9 +212,9 @@ class App {
     void InitConfig() {
       EEPROM.begin(mEEPROMSize);
       ReadEEPROM(CFG);
-      if (DEBUG) {
+      if (CFG.Version != VERSION) {
         CFG = { 
-          240, 115200, 
+          VERSION, {240, 115200}, 
           {true, false}, 
           {LED_BUILTIN, GPIO_NUM_39, GPIO_NUM_35}, 
           {"HomeEinkBadge", "Szeklerman", "tokosmagor2012", {192, 168, 0, 51}, {255, 255, 255, 0}, {192, 168, 0, 1}, {192, 168, 0, 1}, {0, 0, 0, 0}}, 
@@ -268,20 +275,20 @@ class App {
       WiFi.mode(WIFI_STA);
       WiFi.setAutoConnect(true);
       WiFi.setAutoReconnect(true);
-      WiFi.setHostname(CFG.Auth.Hostname);
-      if (CFG.Enable.StaticIP) {
-        IPAddress local_IP(CFG.Auth.LocalIP[0], CFG.Auth.LocalIP[1], CFG.Auth.LocalIP[2], CFG.Auth.LocalIP[3]);
-        IPAddress subnet(CFG.Auth.Subnet[0], CFG.Auth.Subnet[1], CFG.Auth.Subnet[2], CFG.Auth.Subnet[3]);
-        IPAddress gateway(CFG.Auth.Gateway[0], CFG.Auth.Gateway[1], CFG.Auth.Gateway[2], CFG.Auth.Gateway[3]);
-        IPAddress primaryDNS(CFG.Auth.PrimaryDNS[0], CFG.Auth.PrimaryDNS[1], CFG.Auth.PrimaryDNS[2], CFG.Auth.PrimaryDNS[3]);
-        IPAddress secondaryDNS(CFG.Auth.SecondaryDNS[0], CFG.Auth.SecondaryDNS[1], CFG.Auth.SecondaryDNS[2], CFG.Auth.SecondaryDNS[3]);
-        if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
-          dPrintln(SeparationLine);
-          dPrintln("Failed to configure STA");
-        };
-      };
       if (WiFi.status() != WL_CONNECTED) {
         WiFi.begin(CFG.Auth.SSID, CFG.Auth.Password);
+        if (CFG.Enable.StaticIP) {
+          IPAddress local_IP(CFG.Auth.LocalIP[0], CFG.Auth.LocalIP[1], CFG.Auth.LocalIP[2], CFG.Auth.LocalIP[3]);
+          IPAddress subnet(CFG.Auth.Subnet[0], CFG.Auth.Subnet[1], CFG.Auth.Subnet[2], CFG.Auth.Subnet[3]);
+          IPAddress gateway(CFG.Auth.Gateway[0], CFG.Auth.Gateway[1], CFG.Auth.Gateway[2], CFG.Auth.Gateway[3]);
+          IPAddress primaryDNS(CFG.Auth.PrimaryDNS[0], CFG.Auth.PrimaryDNS[1], CFG.Auth.PrimaryDNS[2], CFG.Auth.PrimaryDNS[3]);
+          IPAddress secondaryDNS(CFG.Auth.SecondaryDNS[0], CFG.Auth.SecondaryDNS[1], CFG.Auth.SecondaryDNS[2], CFG.Auth.SecondaryDNS[3]);
+          if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
+            dPrintln(SeparationLine);
+            dPrintln("Failed to configure STA");
+          };
+        };        
+        WiFi.setHostname(CFG.Auth.Hostname);
         delay(250);
         DeviceInfo(true);
         delay(3000);
@@ -313,16 +320,14 @@ class App {
           };
         };
         dPrintln(" success!");
-        #if DEBUG
-          dPrintln(SeparationLine);
-          dPrintf("SSID: %s\n", WiFi.SSID().c_str());
-          dPrintf("IP Address: %s\n", WiFi.localIP().toString().c_str());
-          dPrintf("Subnet Mask: %s\n", WiFi.subnetMask().toString().c_str());
-          dPrintf("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
-          dPrintf("DNS 1: %s\n", WiFi.dnsIP().toString().c_str());
-          dPrintf("DNS 2: %s\n", WiFi.dnsIP(1).toString().c_str());
-          dPrintf("MAC Address: %s\n", WiFi.macAddress().c_str());
-        #endif  
+        dPrintln(SeparationLine);
+        dPrintf("SSID: %s\n", WiFi.SSID().c_str());
+        dPrintf("IP Address: %s\n", WiFi.localIP().toString().c_str());
+        dPrintf("Subnet Mask: %s\n", WiFi.subnetMask().toString().c_str());
+        dPrintf("Gateway: %s\n", WiFi.gatewayIP().toString().c_str());
+        dPrintf("DNS 1: %s\n", WiFi.dnsIP().toString().c_str());
+        dPrintf("DNS 2: %s\n", WiFi.dnsIP(1).toString().c_str());
+        dPrintf("MAC Address: %s\n", WiFi.macAddress().c_str());
       };
     };
 
@@ -532,22 +537,28 @@ class App {
             if (currencies->Attribute("currency", "EUR")) {
               currencies->QueryFloatText(&RTC.Currencies.Eur.Value);
               if (RTC.Currencies.Eur.Index == 0) RTC.Currencies.Eur.Index = UP_INDEX;
-              RTC.Currencies.Eur.Index = RTC.Currencies.Eur.PrevValue < RTC.Currencies.Eur.Value ? UP_INDEX : DOWN_INDEX;
-              if (RTC.Currencies.Eur.PrevValue != RTC.Currencies.Eur.Value) RTC.Currencies.Eur.PrevValue = RTC.Currencies.Eur.Value;
+              if (RTC.Currencies.Eur.PrevValue != RTC.Currencies.Eur.Value) {
+                RTC.Currencies.Eur.Index = RTC.Currencies.Eur.PrevValue < RTC.Currencies.Eur.Value ? UP_INDEX : DOWN_INDEX;
+                if (RTC.Currencies.Eur.PrevValue != RTC.Currencies.Eur.Value) RTC.Currencies.Eur.PrevValue = RTC.Currencies.Eur.Value;
+              }; 
               status += 1;
             };
             if (currencies->Attribute("currency", "USD")) {
               currencies->QueryFloatText(&RTC.Currencies.Usd.Value);
               if (RTC.Currencies.Usd.Index == 0) RTC.Currencies.Usd.Index = UP_INDEX;
-              RTC.Currencies.Usd.Index = RTC.Currencies.Usd.PrevValue < RTC.Currencies.Usd.Value ? UP_INDEX : DOWN_INDEX;
-              if (RTC.Currencies.Usd.PrevValue != RTC.Currencies.Usd.Value) RTC.Currencies.Usd.PrevValue = RTC.Currencies.Usd.Value;              
+              if (RTC.Currencies.Usd.PrevValue != RTC.Currencies.Usd.Value) {
+                RTC.Currencies.Usd.Index = RTC.Currencies.Usd.PrevValue < RTC.Currencies.Usd.Value ? UP_INDEX : DOWN_INDEX;
+                if (RTC.Currencies.Usd.PrevValue != RTC.Currencies.Usd.Value) RTC.Currencies.Usd.PrevValue = RTC.Currencies.Usd.Value; 
+              };
               status += 1;
             };
             if (currencies->Attribute("currency", "HUF")) {
               currencies->QueryFloatText(&RTC.Currencies.Huf.Value);
               if (RTC.Currencies.Huf.Index == 0) RTC.Currencies.Huf.Index = UP_INDEX;
-              RTC.Currencies.Huf.Index = RTC.Currencies.Huf.PrevValue < RTC.Currencies.Huf.Value ? UP_INDEX : DOWN_INDEX;
-              if (RTC.Currencies.Huf.PrevValue != RTC.Currencies.Huf.Value) RTC.Currencies.Huf.PrevValue = RTC.Currencies.Huf.Value;               
+              if (RTC.Currencies.Huf.PrevValue != RTC.Currencies.Huf.Value) {
+                RTC.Currencies.Huf.Index = RTC.Currencies.Huf.PrevValue < RTC.Currencies.Huf.Value ? UP_INDEX : DOWN_INDEX;
+                if (RTC.Currencies.Huf.PrevValue != RTC.Currencies.Huf.Value) RTC.Currencies.Huf.PrevValue = RTC.Currencies.Huf.Value;   
+              };
               status += 1;
             };
           };
@@ -962,13 +973,16 @@ class App {
 
   public: 
     void Init() {
+      WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+      btStop();
       InitConfig();
-      dBegin(CFG.BaudRate);
+      setCpuFrequencyMhz(CFG.CPU.Frequency);
+      dBegin(CFG.CPU.BaudRate);
       for (uint8_t i = 0; i < 3; i++) dPrintln();
       pinMode(SS, OUTPUT);
       pinMode(CFG.GPIO.Led, OUTPUT);
       digitalWrite(CFG.GPIO.Led, LOW);
-      Display.init(CFG.BaudRate);
+      Display.init(CFG.CPU.BaudRate);
       Display.setRotation(3);
       BootCount++;
       if (MeasureBattery() == false) {
